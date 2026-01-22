@@ -1,0 +1,19 @@
+{
+  "name": "bangphakong-bot",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.13.2",
+    "express": "^5.2.1",
+    "node-cron": "^3.0.3"
+  },
+  "description": "",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
