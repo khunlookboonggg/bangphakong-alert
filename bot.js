@@ -8,9 +8,8 @@ const app = express();
 const LINE_TOKEN = "b1WvmdSa1NFRpBZHjMZqvj/4w00TMJeytsM60nbHfr3iCMu5mEAsctmsFtFb+O+1ytNpqQA3foLkAU7ondOvJCZp28jcAqhQiCn1ImXgZ+rWdV5hB+8nyuXkg/eRFXcJSbiiIPpmU5Gv5yadGbS67wdB04t89/1O/w1cDnyilFU=";
 const GEMINI_API_KEY = "AIzaSyCNLf3OTFXCMjb7mLiZjM1Nev-ipJuZVwM";
 
-// ✅ แก้ไข: ใช้ Template Literal (Backtick) เพื่อป้องกัน Syntax Error เรื่อง Unicode
-const firebasePrivateKey = `-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC2tjFJ31n96+R/
+// ✅ แก้ไข: ใช้เครื่องหมาย Backtick (`) ครอบกุญแจแทนเครื่องหมายคำพูด เพื่อป้องกัน Error เรื่อง \u
+const firebasePrivateKey = `-----BEGIN PRIVATE KEY-----MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC2tjFJ31n96+R/
 3wgvTqEyvD6/T4LsTE3JcZZDOl0Mb/gFfDVYwzqITFf2xuD+dgddvkWFtydgju8B
 1Bv/Z9EzjYxMjeamcj4/Mk/a83CMbx3u6+OoyQovy9RFgREVlm3lmBu730fWQmqw
 pK1N3e6HuRyGESK1mPXDpDExIGuMF2wharDCorywlWhzEAimNSy+jcjPsz/EPuBk
@@ -34,7 +33,7 @@ dptc4f9NYuAIFzxB/G5ld+pEUnW3UFmNjGt1QNvfGTIl6CY52SMzKMOHiZBqVWm7
 0/laqt/jpo3xS3eP0a1uMhCCOtjyPP8Kok1K6qAOx5HoxN0AOfLsV7S5Fy9Deyy1
 Eqa1p1LE2AmBGfDPCbZwHcy1xWWR07obh5UIr8ECgYBOgTvox0H1MPGEA66s8fIB
 AF0UuIogskhw4dGUpxT0+zS7kU5fvJDHnlrRTbaXGjfCeqdpeUIQfouN0xqIYn6F
-dKuawtLlQVZS9VoA2eAlQnEhs0MrMqrwl75ZwEiePWoBGkAPyEo+ybJZb2/mRSky
+ndKuawtLlQVZS9VoA2eAlQnEhs0MrMqrwl75ZwEiePWoBGkAPyEo+ybJZb2/mRSky
 ko2NDqctw2B4IukbX/vcGA==
 -----END PRIVATE KEY-----`.replace(/\\n/g, '\n');
 
@@ -45,6 +44,7 @@ const firebaseConfig = {
 };
 
 // --- 🔥 INITIALIZE FIRESTORE ---
+let db;
 try {
     if (!admin.apps.length) {
         admin.initializeApp({
@@ -52,16 +52,18 @@ try {
         });
         console.log("✅ Firebase (Firestore) Initialized");
     }
-} catch (e) { console.error("❌ Firebase Init Error:", e.message); }
+    db = admin.firestore();
+} catch (e) {
+    console.error("❌ Firebase Init Error:", e.message);
+}
 
-const db = admin.firestore();
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const apiClient = axios.create({ timeout: 15000 });
 
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Bot Status: Online'));
+app.get('/', (req, res) => res.send('Bot is ready!'));
 
 app.post('/webhook', async (req, res) => {
     const events = req.body.events;
@@ -79,7 +81,7 @@ app.post('/webhook', async (req, res) => {
                     await replyWithGemini(userText, replyToken);
                 }
             } catch (err) {
-                console.error("Webhook Error:", err.message);
+                console.error("Error:", err.message);
             }
         }
     }
@@ -87,6 +89,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 async function replyWaterFromFirestore(replyToken) {
+    if (!db) return await sendLineText(replyToken, "❌ ฐานข้อมูลไม่ได้เชื่อมต่อ");
     try {
         const snapshot = await db.collection("current_water").get();
         if (snapshot.empty) return await sendLineText(replyToken, "📊 ไม่พบข้อมูลระดับน้ำ");
@@ -102,17 +105,16 @@ async function replyWaterFromFirestore(replyToken) {
         });
         await sendLineText(replyToken, report);
     } catch (e) {
-        await sendLineText(replyToken, "❌ เกิดข้อผิดพลาดในการดึงข้อมูล");
+        await sendLineText(replyToken, "❌ ข้อผิดพลาด: " + e.message);
     }
 }
 
 async function replyWithGemini(userText, replyToken) {
     try {
         const result = await model.generateContent(userText);
-        const text = result.response.text();
-        await sendLineText(replyToken, text);
+        await sendLineText(replyToken, result.response.text());
     } catch (e) {
-        await sendLineText(replyToken, "🤖 ระบบ Gemini ขัดข้อง");
+        await sendLineText(replyToken, "🤖 Gemini ขัดข้องชั่วคราว");
     }
 }
 
@@ -124,8 +126,8 @@ async function sendLineText(replyToken, text) {
         }, {
             headers: { "Authorization": `Bearer ${LINE_TOKEN}` }
         });
-    } catch (e) { console.error("LINE Send Error:", e.message); }
+    } catch (e) { console.error("LINE Error"); }
 }
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Server on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Bot on port ${PORT}`));
