@@ -8,9 +8,8 @@ const app = express();
 const LINE_TOKEN = "b1WvmdSa1NFRpBZHjMZqvj/4w00TMJeytsM60nbHfr3iCMu5mEAsctmsFtFb+O+1ytNpqQA3foLkAU7ondOvJCZp28jcAqhQiCn1ImXgZ+rWdV5hB+8nyuXkg/eRFXcJSbiiIPpmU5Gv5yadGbS67wdB04t89/1O/w1cDnyilFU=";
 const GEMINI_API_KEY = "AIzaSyCNLf3OTFXCMjb7mLiZjM1Nev-ipJuZVwM";
 
-// ✅ ใช้ข้อมูลกุญแจจากไฟล์ JSON ที่คุณอัปโหลดมาโดยตรง
-// ใช้เครื่องหมาย ` (Backtick) และพิมพ์กุญแจแบบเว้นบรรทัดจริง เพื่อเลี่ยง Syntax Error
-const firebasePrivateKey = `-----BEGIN PRIVATE KEY-----
+// ✅ กุญแจจากไฟล์ JSON ของคุณ (จัดรูปแบบใหม่ให้สะอาดที่สุด)
+const rawPrivateKey = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCwW3+Rms/BTeaI
 xM+IL3kwxNsh5s8/wgF4j+/gqQFwB56gIRM+HXqC5aRbxGr+nedjKu2c/9x2KBeQ
 hLwkP4mZaW/BxGoIdiUqYKmqxVDTZbejwS/cCXj82CWECJbQUWzBBbYGgTBbsDAi
@@ -39,24 +38,29 @@ w3LQQA5HiCY2e0QcmZMf+5m6vI5PFjut07g/q9L+Nyjnf490JMZGGQ6MGmFrVaWr
 nlntr4CFeEykH+jDuLhHFN0Rz
 -----END PRIVATE KEY-----`;
 
+// ✨ ฟังก์ชันล้างกุญแจให้สะอาด (Clean Key Function)
+const formatKey = (key) => {
+    return key.split('\n').map(line => line.trim()).filter(line => line).join('\n');
+};
+
 const firebaseConfig = {
-  projectId: "bangpakong-tide-alert",
-  clientEmail: "firebase-adminsdk-fbsvc@bangpakong-tide-alert.iam.gserviceaccount.com",
-  privateKey: firebasePrivateKey.replace(/\\n/g, '\n')
+    projectId: "bangpakong-tide-alert",
+    clientEmail: "firebase-adminsdk-fbsvc@bangpakong-tide-alert.iam.gserviceaccount.com",
+    privateKey: formatKey(rawPrivateKey)
 };
 
 // --- 🔥 INITIALIZE FIRESTORE ---
 let db;
 try {
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(firebaseConfig)
-    });
-    console.log("✅ Firebase Connected Successfully");
-  }
-  db = admin.firestore();
+    if (!admin.apps.length) {
+        admin.initializeApp({
+            credential: admin.credential.cert(firebaseConfig)
+        });
+        console.log("✅ Firebase Connected Successfully!");
+    }
+    db = admin.firestore();
 } catch (e) {
-  console.error("❌ Firebase Connection Failed:", e.message);
+    console.error("❌ Firebase Connection Failed:", e.message);
 }
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -64,80 +68,56 @@ const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Bot Status: Online and Ready!'));
+app.get('/', (req, res) => res.send('Bot Status: Online'));
 
 app.post('/webhook', async (req, res) => {
-  const events = req.body.events;
-  if (!events || events.length === 0) return res.sendStatus(200);
+    const events = req.body.events;
+    if (!events || events.length === 0) return res.sendStatus(200);
 
-  for (let event of events) {
-    if (event.type === 'message' && event.message.type === 'text') {
-      const userText = event.message.text.trim();
-      const replyToken = event.replyToken;
-
-      try {
-        if (userText.includes("ระดับน้ำวันนี้")) {
-          await replyWaterFromFirestore(replyToken);
-        } else {
-          await replyWithGemini(userText, replyToken);
+    for (let event of events) {
+        if (event.type === 'message' && event.message.type === 'text') {
+            const userText = event.message.text.trim();
+            if (userText.includes("ระดับน้ำวันนี้")) {
+                await replyWaterFromFirestore(event.replyToken);
+            } else {
+                await replyWithGemini(userText, event.replyToken);
+            }
         }
-      } catch (err) {
-        console.error("Webhook Error:", err.message);
-      }
     }
-  }
-  res.sendStatus(200);
+    res.sendStatus(200);
 });
 
-// ✅ ฟังก์ชันดึงข้อมูลจากตาราง current_water มาแสดงผล
 async function replyWaterFromFirestore(replyToken) {
-  if (!db) return await sendLineText(replyToken, "⚠️ ระบบฐานข้อมูลไม่พร้อมใช้งาน");
-  
-  try {
-    // ดึงข้อมูลจากคอลเลกชัน current_water
-    const snapshot = await db.collection("current_water").get();
-    
-    if (snapshot.empty) {
-      return await sendLineText(replyToken, "📊 ไม่พบข้อมูลระดับน้ำในระบบ");
+    if (!db) return await sendLineText(replyToken, "⚠️ ฐานข้อมูลไม่ได้เชื่อมต่อ");
+    try {
+        const snapshot = await db.collection("current_water").get();
+        if (snapshot.empty) return await sendLineText(replyToken, "📊 ไม่พบข้อมูล");
+
+        let report = "📊 รายงานระดับน้ำล่าสุด\n--------------------\n";
+        snapshot.forEach(doc => {
+            const d = doc.data();
+            let icon = d.alert_level === "DANGER" ? "🔴" : "🟢";
+            report += `${icon} ${d.station_name || doc.id}\n💧 ${d.waterlevel_msl} ม.รทก.\n--------------------\n`;
+        });
+        await sendLineText(replyToken, report);
+    } catch (e) {
+        await sendLineText(replyToken, "❌ Error: " + e.message);
     }
-
-    let report = "📊 รายงานระดับน้ำล่าสุด\n----------------------------\n";
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      const name = data.station_name || doc.id;
-      const wl = data.waterlevel_msl ?? "N/A";
-      const alert = data.alert_level || "SAFE";
-      const province = data.province || "ฉะเชิงเทรา";
-      
-      let icon = (alert === "DANGER") ? "🔴" : (alert === "WARNING") ? "🟡" : "🟢";
-      report += `${icon} ${name}\n📍 จ.${province}\n💧 ระดับน้ำ: ${wl} ม.รทก.\n----------------------------\n`;
-    });
-
-    await sendLineText(replyToken, report);
-  } catch (e) {
-    await sendLineText(replyToken, "❌ เกิดข้อผิดพลาด: " + e.message);
-  }
 }
 
 async function replyWithGemini(userText, replyToken) {
-  try {
-    const result = await model.generateContent(userText);
-    await sendLineText(replyToken, result.response.text());
-  } catch (e) {
-    await sendLineText(replyToken, "🤖 Gemini กำลังประมวลผล...");
-  }
+    try {
+        const result = await model.generateContent(userText);
+        await sendLineText(replyToken, result.response.text());
+    } catch (e) { console.error(e); }
 }
 
 async function sendLineText(replyToken, text) {
-  try {
-    await axios.post("https://api.line.me/v2/bot/message/reply", {
-      replyToken: replyToken,
-      messages: [{ type: "text", text: text }]
-    }, {
-      headers: { "Authorization": `Bearer ${LINE_TOKEN}` }
-    });
-  } catch (e) { console.error("LINE Error"); }
+    try {
+        await axios.post("https://api.line.me/v2/bot/message/reply", 
+        { replyToken, messages: [{ type: "text", text }] },
+        { headers: { Authorization: `Bearer ${LINE_TOKEN}` } });
+    } catch (e) { console.error("LINE Error"); }
 }
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Ready on port ${PORT}`));
+app.listen(process.env.PORT || 10000);
