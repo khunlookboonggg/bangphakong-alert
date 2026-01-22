@@ -8,7 +8,7 @@ const app = express();
 const LINE_TOKEN = "b1WvmdSa1NFRpBZHjMZqvj/4w00TMJeytsM60nbHfr3iCMu5mEAsctmsFtFb+O+1ytNpqQA3foLkAU7ondOvJCZp28jcAqhQiCn1ImXgZ+rWdV5hB+8nyuXkg/eRFXcJSbiiIPpmU5Gv5yadGbS67wdB04t89/1O/w1cDnyilFU=";
 const GEMINI_API_KEY = "AIzaSyCNLf3OTFXCMjb7mLiZjM1Nev-ipJuZVwM";
 
-// ข้อมูลกุญแจที่คุณให้มา (รวมไว้ในนี้เลยเพื่อความง่าย)
+// ✅ อัปเดตเป็นกุญแจใหม่ล่าสุดที่คุณส่งมาแล้ว
 const firebaseConfig = {
   "type": "service_account",
   "project_id": "bangpakong-tide-alert",
@@ -24,10 +24,10 @@ try {
             credential: admin.credential.cert(firebaseConfig),
             databaseURL: "https://bangphakong-alert-default-rtdb.firebaseio.com/"
         });
-        console.log("✅ Firebase: Connected via Code");
+        console.log("✅ Firebase: Connected with new key");
     }
 } catch (e) {
-    console.error("❌ Firebase Error:", e.message);
+    console.error("❌ Firebase Init Error:", e.message);
 }
 
 const db = admin.database();
@@ -36,6 +36,8 @@ const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const apiClient = axios.create({ timeout: 20000 });
 
 app.use(express.json());
+
+app.get('/', (req, res) => res.send('🚀 Bangphakong Bot: Online'));
 
 // --- 📬 WEBHOOK RECEIVER ---
 app.post('/webhook', async (req, res) => {
@@ -47,15 +49,17 @@ app.post('/webhook', async (req, res) => {
             const userText = event.message.text.trim();
             const replyToken = event.replyToken;
 
+            console.log(`📩 Message: ${userText}`);
+
             try {
+                // ใช้ .includes เพื่อให้พิมพ์ "ขอระดับน้ำวันนี้หน่อย" ก็ติด
                 if (userText.includes("ระดับน้ำวันนี้")) {
                     await replyWaterFromFirebase(replyToken);
                 } else {
                     await replyWithGemini(userText, replyToken);
                 }
             } catch (err) {
-                console.error("❌ Error:", err.message);
-                await sendLineText(replyToken, "⚠️ บอทขัดข้อง: " + err.message);
+                console.error("❌ Webhook Error:", err.message);
             }
         }
     }
@@ -63,35 +67,59 @@ app.post('/webhook', async (req, res) => {
 });
 
 async function replyWaterFromFirebase(replyToken) {
-    const snapshot = await db.ref("current_water").once("value");
-    const data = snapshot.val();
-    if (!data) return await sendLineText(replyToken, "📊 ไม่พบข้อมูลในระบบ");
+    try {
+        console.log("🔍 Fetching from Firebase...");
+        const snapshot = await db.ref("current_water").once("value");
+        const data = snapshot.val();
+        
+        console.log("📦 Firebase Data:", JSON.stringify(data));
 
-    let report = "📊 รายงานระดับน้ำล่าสุด\n----------------------------\n";
-    Object.keys(data).forEach(code => {
-        const st = data[code];
-        const name = st.station_name || code;
-        const wl = st.waterlevel_msl ?? "N/A";
-        const alert = st.alert_level || "SAFE";
-        let icon = (alert === "DANGER") ? "🔴" : (alert === "WARNING") ? "🟡" : "🟢";
-        report += `${icon} ${name}\n💧 ระดับน้ำ: ${wl} ม.รทก.\n----------------------------\n`;
-    });
-    await sendLineText(replyToken, report);
+        if (!data) {
+            return await sendLineText(replyToken, "📊 ไม่พบข้อมูลระดับน้ำในระบบ (Path: current_water)");
+        }
+
+        let report = "📊 รายงานระดับน้ำล่าสุด\n----------------------------\n";
+        const keys = Object.keys(data);
+        keys.forEach(code => {
+            const st = data[code];
+            const name = st.station_name || "ไม่ทราบชื่อสถานี";
+            const wl = (st.waterlevel_msl !== undefined) ? st.waterlevel_msl : "N/A";
+            const alert = st.alert_level || "SAFE";
+            
+            let icon = (alert === "DANGER") ? "🔴" : (alert === "WARNING") ? "🟡" : "🟢";
+            report += `${icon} ${name}\n💧 ระดับน้ำ: ${wl} ม.รทก.\n----------------------------\n`;
+        });
+
+        await sendLineText(replyToken, report);
+    } catch (e) {
+        console.error("❌ Firebase Read Error:", e.message);
+        await sendLineText(replyToken, "⚠️ ดึงข้อมูลไม่ได้: " + e.message);
+    }
 }
 
 async function replyWithGemini(userText, replyToken) {
-    const result = await model.generateContent(userText);
-    await sendLineText(replyToken, result.response.text());
+    try {
+        const result = await model.generateContent(userText);
+        const text = result.response.text();
+        await sendLineText(replyToken, text);
+    } catch (e) {
+        console.error("❌ Gemini Error:", e.message);
+    }
 }
 
 async function sendLineText(replyToken, text) {
-    await apiClient.post("https://api.line.me/v2/bot/message/reply", {
-        replyToken: replyToken,
-        messages: [{ type: "text", text: text }]
-    }, {
-        headers: { "Authorization": `Bearer ${LINE_TOKEN}` }
-    });
+    try {
+        await apiClient.post("https://api.line.me/v2/bot/message/reply", {
+            replyToken: replyToken,
+            messages: [{ type: "text", text: text }]
+        }, {
+            headers: { "Authorization": `Bearer ${LINE_TOKEN}` }
+        });
+        console.log("✅ Reply Sent");
+    } catch (e) {
+        console.error("❌ LINE Send Error:", e.response ? e.response.data : e.message);
+    }
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Server ready on port ${PORT}`));
