@@ -9,7 +9,7 @@ const LINE_TOKEN = "b1WvmdSa1NFRpBZHjMZqvj/4w00TMJeytsM60nbHfr3iCMu5mEAsctmsFtFb
 const GEMINI_API_KEY = "AIzaSyCNLf3OTFXCMjb7mLiZjM1Nev-ipJuZVwM";
 
 // ✅ ใช้ข้อมูลกุญแจจากไฟล์ JSON ที่คุณอัปโหลดมาโดยตรง
-// ใช้เครื่องหมาย ` (Backtick) เพื่อป้องกัน Syntax Error เรื่อง Unicode
+// ใช้เครื่องหมาย ` (Backtick) และพิมพ์กุญแจแบบเว้นบรรทัดจริง เพื่อเลี่ยง Syntax Error
 const firebasePrivateKey = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCwW3+Rms/BTeaI
 xM+IL3kwxNsh5s8/wgF4j+/gqQFwB56gIRM+HXqC5aRbxGr+nedjKu2c/9x2KBeQ
@@ -42,7 +42,7 @@ nlntr4CFeEykH+jDuLhHFN0Rz
 const firebaseConfig = {
   projectId: "bangpakong-tide-alert",
   clientEmail: "firebase-adminsdk-fbsvc@bangpakong-tide-alert.iam.gserviceaccount.com",
-  privateKey: firebasePrivateKey.replace(/\\n/g, '\n') // แก้ไขกรณีมีการจัดฟอร์แมตผิดพลาด
+  privateKey: firebasePrivateKey.replace(/\\n/g, '\n')
 };
 
 // --- 🔥 INITIALIZE FIRESTORE ---
@@ -60,11 +60,11 @@ try {
 }
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const model = genAI.getGenerativeAI({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 app.use(express.json());
 
-app.get('/', (req, res) => res.send('Bot is Live!'));
+app.get('/', (req, res) => res.send('Bot Status: Online and Ready!'));
 
 app.post('/webhook', async (req, res) => {
   const events = req.body.events;
@@ -89,10 +89,12 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
+// ✅ ฟังก์ชันดึงข้อมูลจากตาราง current_water มาแสดงผล
 async function replyWaterFromFirestore(replyToken) {
-  if (!db) return await sendLineText(replyToken, "⚠️ ระบบฐานข้อมูลขัดข้อง");
+  if (!db) return await sendLineText(replyToken, "⚠️ ระบบฐานข้อมูลไม่พร้อมใช้งาน");
   
   try {
+    // ดึงข้อมูลจากคอลเลกชัน current_water
     const snapshot = await db.collection("current_water").get();
     
     if (snapshot.empty) {
@@ -105,14 +107,15 @@ async function replyWaterFromFirestore(replyToken) {
       const name = data.station_name || doc.id;
       const wl = data.waterlevel_msl ?? "N/A";
       const alert = data.alert_level || "SAFE";
+      const province = data.province || "ฉะเชิงเทรา";
       
       let icon = (alert === "DANGER") ? "🔴" : (alert === "WARNING") ? "🟡" : "🟢";
-      report += `${icon} ${name}\n💧 ระดับน้ำ: ${wl} ม.รทก.\n----------------------------\n`;
+      report += `${icon} ${name}\n📍 จ.${province}\n💧 ระดับน้ำ: ${wl} ม.รทก.\n----------------------------\n`;
     });
 
     await sendLineText(replyToken, report);
   } catch (e) {
-    await sendLineText(replyToken, "❌ ดึงข้อมูลไม่ได้: " + e.message);
+    await sendLineText(replyToken, "❌ เกิดข้อผิดพลาด: " + e.message);
   }
 }
 
