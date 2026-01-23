@@ -1,88 +1,116 @@
+const functions = require("firebase-functions");
 const axios = require("axios");
-const express = require("express");
 const admin = require("firebase-admin");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const app = express();
 
-// --- ⚙️ CONFIGURATION ---
-const LINE_TOKEN = "b1WvmdSa1NFRpBZHjMZqvj/4w00TMJeytsM60nbHfr3iCMu5mEAsctmsFtFb+O+1ytNpqQA3foLkAU7ondOvJCZp28jcAqhQiCn1ImXgZ+rWdV5hB+8nyuXkg/eRFXcJSbiiIPpmU5Gv5yadGbS67wdB04t89/1O/w1cDnyilFU=";
-const GEMINI_API_KEY = "AIzaSyCNLf3OTFXCMjb7mLiZjM1Nev-ipJuZVwM";
+// ================= CONFIG =================
+const LINE_TOKEN = functions.config().line.token;
+const GEMINI_API_KEY = functions.config().gemini.key;
 
-// ✅ เชื่อมต่อ Firebase โดยใช้อ่านไฟล์โดยตรง
-const serviceAccount = require("./serviceAccountKey.json");
+// Firebase (ใช้ service account อัตโนมัติ)
+admin.initializeApp();
+const db = admin.firestore();
 
-let db;
-try {
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
-        });
-        console.log("✅ Firebase Connected Successfully from JSON file!");
-    }
-    db = admin.firestore();
-} catch (e) {
-    console.error("❌ Firebase Connection Error:", e.message);
-}
-
+// Gemini
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-app.use(express.json());
+// ================= WEBHOOK (Cloud Function) =================
+exports.webhook = functions
+  .region("asia-southeast1") // ใกล้ไทย ตอบไว
+  .https.onRequest(async (req, res) => {
 
-app.get('/', (req, res) => res.send('Bot Status: Online (Using JSON Key)'));
-
-app.post('/webhook', async (req, res) => {
-    const events = req.body.events;
-    if (!events || events.length === 0) return res.sendStatus(200);
-
-    for (let event of events) {
-        if (event.type === 'message' && event.message.type === 'text') {
-            const userText = event.message.text.trim();
-            if (userText.includes("ระดับน้ำวันนี้")) {
-                await replyWaterFromFirestore(event.replyToken);
-            } else {
-                await replyWithGemini(userText, event.replyToken);
-            }
-        }
+    // LINE ต้องการ 200 OK เสมอ
+    if (req.method !== "POST") {
+      return res.status(200).send("OK");
     }
+
+    const events = req.body.events;
+    if (!events || events.length === 0) {
+      return res.sendStatus(200);
+    }
+
+    for (const event of events) {
+      if (event.type === "message" && event.message.type === "text") {
+        const userText = event.message.text.trim();
+        const replyToken = event.replyToken;
+
+        if (userText.includes("ระดับน้ำวันนี้")) {
+          await replyWaterFromFirestore(replyToken);
+        } else {
+          await replyWithGemini(userText, replyToken);
+        }
+      }
+    }
+
     res.sendStatus(200);
-});
+  });
+
+// ================= FUNCTION เดิม (logic ไม่เปลี่ยน) =================
 
 async function replyWaterFromFirestore(replyToken) {
-    if (!db) return await sendLineText(replyToken, "⚠️ ฐานข้อมูลไม่พร้อมใช้งาน");
-    try {
-        // 📊 ดึงข้อมูลจากตาราง current_water
-        const snapshot = await db.collection("current_water").get();
-        if (snapshot.empty) return await sendLineText(replyToken, "📊 ไม่พบข้อมูลระดับน้ำ");
+  try {
+    const snapshot = await db.collection("current_water").get();
 
-        let report = "📊 รายงานระดับน้ำล่าสุด\n--------------------\n";
-        snapshot.forEach(doc => {
-            const d = doc.data();
-            let icon = d.alert_level === "DANGER" ? "🔴" : "🟢";
-            let station = d.station_name || doc.id;
-            let level = d.waterlevel_msl ?? "N/A";
-            report += `${icon} ${station}\n💧 ระดับน้ำ: ${level} ม.รทก.\n--------------------\n`;
-        });
-        await sendLineText(replyToken, report);
-    } catch (e) {
-        await sendLineText(replyToken, "❌ Error: " + e.message);
+    if (snapshot.empty) {
+      return await sendLineText(
+        replyToken,
+        "📊 ขณะนี้ไม่มีข้อมูลระดับน้ำในระบบ"
+      );
     }
+
+    let report = "📊 รายงานระดับน้ำล่าสุด\n--------------------\n";
+
+    snapshot.forEach(doc => {
+      const d = doc.data();
+
+      let icon = "🔵";
+      if (d.alert_level === "WARNING") icon = "🟡";
+      if (d.alert_level === "ORANGE") icon = "🟠";
+      if (d.alert_level === "DANGER") icon = "🔴";
+
+      const station = d.station_name || doc.id;
+      const level = d.waterlevel_msl ?? "ไม่มีข้อมูล";
+
+      report += `${icon} ${station}\n💧 ระดับน้ำ: ${level} ม.รทก.\n--------------------\n`;
+    });
+
+    await sendLineText(replyToken, report);
+  } catch (e) {
+    console.error("Firestore Error:", e.message);
+    await sendLineText(replyToken, "❌ ไม่สามารถดึงข้อมูลระดับน้ำได้");
+  }
 }
 
 async function replyWithGemini(userText, replyToken) {
-    try {
-        const result = await model.generateContent(userText);
-        await sendLineText(replyToken, result.response.text());
-    } catch (e) { console.error(e); }
+  try {
+    const result = await model.generateContent(userText);
+    await sendLineText(replyToken, result.response.text());
+  } catch (e) {
+    console.error("Gemini Error:", e.message);
+    await sendLineText(
+      replyToken,
+      "ขออภัย ระบบไม่สามารถตอบได้ในขณะนี้"
+    );
+  }
 }
 
 async function sendLineText(replyToken, text) {
-    try {
-        await axios.post("https://api.line.me/v2/bot/message/reply", 
-        { replyToken, messages: [{ type: "text", text }] },
-        { headers: { Authorization: `Bearer ${LINE_TOKEN}` } });
-    } catch (e) { console.error("LINE Reply Error"); }
+  try {
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      {
+        replyToken,
+        messages: [{ type: "text", text: String(text) }]
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${LINE_TOKEN}`
+        }
+      }
+    );
+  } catch (e) {
+    console.error("LINE Reply Error:", e.response?.data || e.message);
+  }
 }
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Ready on port ${PORT}`));
